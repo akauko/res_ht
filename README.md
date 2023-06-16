@@ -1,7 +1,7 @@
 # res_ht
 Code for the project: 
-[Ebinger, J.E. et al., "Apparent Treatment Resistant Hypertension Associated Lifetime Cardiovascular Risk in a Longitudinal 
-National Registry." Eur. J. Prev. Cardiol. (2023) accepted.](https://doi.org/10.1093/eurjpc/zwad066)
+[Ebinger, J.E. et al., Apparent Treatment Resistant Hypertension Associated Lifetime Cardiovascular Risk in a Longitudinal 
+National Registry. Eur. J. Prev. Cardiol. (2023) accepted.](https://doi.org/10.1093/eurjpc/zwad066)
 
 
 * Data: FinnGen https://www.finngen.fi/en
