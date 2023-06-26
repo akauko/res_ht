@@ -12,7 +12,7 @@ National Registry. Eur. J. Prev. Cardiol. (2023) accepted.](https://doi.org/10.1
 ```
 res_ht
 ├── README.md                    # Overview
-├── res_ht5_ses.rmd              # R markdown for the main analysis
+├── res_ht5_final.rmd              # R markdown for the main analysis
 ├── res_ht5_diursublc.rmd        # Sensitivity analysis with changed medication class definition
 ├── ATC_codes_r8.csv             # Medication class definitions for the main analysis
 ├── ATC_codes_r8_diursubcl.csv   # Medication class definitions for the sensitivity analysis
