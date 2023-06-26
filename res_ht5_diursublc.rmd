@@ -1,0 +1,781 @@
+---
+title: "Resistant hypertension"
+editor_options:
+  chunk_output_type: console
+  markdown:
+    wrap: sentence
+output:
+  html_document:
+    number_sections: yes
+    code_folding: hide
+    toc: yes
+    toc_float:
+      collapsed: no
+      smooth_scroll: no
+    theme: flatly
+    highlight: haddock
+    df_print: paged
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=F}
+
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message=F)
+
+```
+
+<details><summary>**Libraries**</summary>
+
+```{r libraries, class.source = 'fold-show'}
+
+library(tidyverse)
+library(survival)   # survival analysis
+library(data.table) # fread() function
+library(gridExtra)  # plots to grid
+library(survminer)  # ggbased visualization and extra diagnostics
+library(visdat)     # visualization of tibble and na's
+library(kableExtra) # Pretty tables
+library(tableone)   # Characteristics table
+library(compareC)   # Compare c-index
+
+#install.packages("scripts/packages/warp_0.2.0.tar.gz", repos=NULL)
+#install.packages("scripts/packages/slider_0.2.1.tar.gz", repos=NULL)
+#install.packages("scripts/packages/slider_0.3.0.tar.gz", repos=NULL)
+#install.packages("scripts/packages/tinytest_1.2.4.tar.gz", repos=NULL)
+#install.packages("scripts/packages/stringdist_0.9.6.3.tar.gz", repos=NULL)
+#install.packages("scripts/packages/geosphere_1.5-10.tar.gz", repos=NULL)
+#install.packages("scripts/packages/fuzzyjoin_0.1.6.tar.gz", repos=NULL)
+library(slider)
+library(fuzzyjoin)
+
+#Trying to fix survminer problems...
+#install.packages("scripts/packages/ggplot2_3.4.0.tar.gz", repos=NULL)
+#install.packages("scripts/packages/survminer_0.4.9.tar.gz", repos=NULL)
+
+
+fg_path <- "/finngen/library-red/finngen_R8/"
+data_path <- "data"
+fig_path <- "figs.diursubcl"
+font_size <- 12
+
+source("scripts/functions.R")
+
+```
+
+</details>
+
+<br>
+
+# Data
+
+<br>
+
+## Definitions
+
+<br>
+
+Our aim is to create a new endpoint for **medication resistant hypertension**.
+We will read detailed information from different hypertension medicines from drug purchase register and select cases, where minimum five different medicines have been purchased within three months period.
+
+**Included ATC codes:**
+
+-   C02
+
+    -   Include all, except C02KX
+    -   Two medicines: Group C02L
+
+-   C03
+
+    -   Include all.
+    -   Two medicines: C03E
+
+-   C07
+
+    -   Include all.
+    -   Two medicines: Groups C07B, C07C, C07D, C07FB
+
+-   C08
+
+    -   Include all.
+    -   Two medicines: Group C08G
+
+-   C09
+
+    -   Include all.
+    -   Two medicines: C09BA, C09BB, C09BX02, C09BX05, C09DA, C09DB, C09DX02, C09DX04, C09DX05, C09XA52
+    -   Three medicines: C09BX01, C09BX03, C09BX04, C09DX01, C09DX03, C09DX06, C09DX07, C09XA54
+
+<br>
+
+**Drug classes:**
+
+-   Diuretics
+-   ACE inhibitors (ACEI)
+-   Angiotensin II receptor blockers (ARB)
+-   Calcium chanel blockers (CCB)
+-   Beta blockers (BB)
+-   Other
+
+**Datasets**
+
+-   Count variable NRMED_HT 
+
+    - Maximum number of different antihypertensive *medicines* within 3 months window
+    - Only persons with diagnosed hypertension I9_HYPTENS and > 0 medicines
+
+-   Count variable NRCL_HT 
+
+    - Maximum number of different antihypertensive medicine *classes* within 3 months window
+    - Only persons with diagnosed hypertension I9_HYPTENS and > 0 medicines
+
+-   Binary variable RES_HT
+
+    -   Cases: 4-5 drug classes within 3 months time window *and* I9_HYPTENS.
+    -   Controls: 1 drug purchase and I9_HYPTENS.
+
+
+-   Binary variable REFR_HT
+
+    -   Cases: $\geq$ 6 drug classes within 3 months time window *and* I9_HYPTENS.
+    -   Controls: 1 drug purchase and I9_HYPTENS.
+
+
+<br>
+
+## Create variables NRMED_MAX and NRCLASS_MAX
+
+<br>
+
+**Copy and preprocess outside the R**
+
+Endpoint file is transfered and unzipped.
+Entries of interest are selected from endpoint file prior to import to R, because the original phenotype file is very large.
+
+Pattern: grep 'PURCH' <in-file> \| grep ' C0[2,3,7,8,9]'
+
+```{bash, eval=F}
+
+phenodir="/finngen/red/phenotype-R8"
+datadir="/finngen/red/res_ht/data"
+grep 'PURCH\|FINNGENID'  $phenodir/finngen_R8_detailed_longitudinal.txt | grep '\sC0[2,3,7,8,9]\|FINNGENID'  > $datadir/R8_detailed_C0.txt &
+
+```
+
+<br>
+
+
+**Moving sum of drug purchases**
+
+First we calculate moving sum for drug purchases within the 3 months window.
+Then we create file for cases in 'endpoint format'.
+
+Searching unique medicines and handling strings in each window is slow, so this is run as a separate Rscript.
+
+```{bash class.source = 'fold-show', eval = F}
+
+Rscript scripts/gen_res_ht_pre55_diursubcl.R &
+
+```
+
+<br>
+
+## Read files and create final variables
+
+Endpoint and covariate files are transfered and unzipped.
+Entries of interest are selected from endpoint file prior to import to R, because the original phenotype file is very large.
+
+```{bash, eval=F}
+
+#Self written perl-script to extract columns from phenotype file
+datadir="/home/ivm/res_ht/data"
+perl scripts/select_columns.pl $datadir/finngen_R8_endpoint.txt  $datadir/finngen_R8_HT.txt scripts/fg_pheno_cols.txt &
+
+
+```
+
+
+## Combine and preprocess 
+
+<br>
+
+Define variables
+
+```{r}
+
+names_ep <- list("CVD_HARD", "CHD","HEARTFAIL", "STR_EXH", "INTRACRA",  "RENFAIL", "DEATH", "K_CARDIAC")
+names_ep_post <- lapply(names_ep, function(ep){str_glue("{ep}_POST")}) 
+nice_names <- list(CVD_HARD = "CVD", STR = "Stroke", STR_EXH = "Ischaemic stroke", INTRACRA = "Hemorrhagic stroke", CHD="CHD", HEARTFAIL = "Heart Failure", DEMENTIA = "Dementia", RENFAIL = "Renal Failure", DEATH = "Death", K_CARDIAC = "Cardiac death")
+
+covs <- c("female", "DIABETES", "OBESITY", "HYPCHOL_WIDE") #used for cox
+covs_nfem <- c("DIABETES", "OBESITY", "HYPCHOL_WIDE")
+covs_pre <- c("female", "DIABETES_PRE", "OBESITY_PRE", "HYPCHOL_WIDE_PRE")
+
+```
+
+
+Read in new file and combine with other data.
+
+```{r}
+
+#endpoints and covariates
+phenotypes <- fread(str_glue("{data_path}/finngen_R8_HT.txt")) 
+#endpoints and covariates
+htres_pre55 <- fread(str_glue("{data_path}/nrmed_max_r8_pre55_diursubcl.tsv"))
+htres_pre55_long <- fread(str_glue("{data_path}/nrmed_long_r8_pre55_diursubcl.tsv.gz"))
+phenomin <- fread(str_glue("{fg_path}/phenotype_2.0/data/finngen_R8_minimum.txt.gz")) 
+sex_in <- fread(str_glue("{fg_path}/analysis_covariates/finngen_R8_cov_1.0.txt.gz")) %>%
+  select(FINNGENID, SEX_IMPUTED)
+#summary(htres_pre55)
+
+#HT_RES_CL was originally created in script gen_res_ht.R as moving sum, and not here, because that's only way to get age and year correct. For example in case where nrcl_max == 6, we should use age when nrcl_max==4 is first time reached, not when maximum is reached. 
+
+df.55 <- phenomin %>%
+  right_join(sex_in, by = "FINNGENID") %>%
+  left_join(htres_pre55, by = "FINNGENID") %>%
+  left_join(phenotypes, by = "FINNGENID") %>%
+
+  #change variable names
+  rename(NRCLASS_MAX55 =  NRCLASS_MAX, NRCLASS_MAX55_AGE = NRCLASS_MAX_AGE, NRCLASS_MAX55_YEAR =  NRCLASS_MAX_YEAR) %>% 
+  
+  mutate(
+         female = SEX_IMPUTED,
+         
+         #These include all values, also if I9_HYPTENS == 0; for NRMED_MAX NA's are set as 0. 
+         NRCLASS_MAX55 = if_else(is.na(NRCLASS_MAX55), 0L, NRCLASS_MAX55),
+         NRCLASS_MAX55_AGE = if_else(NRCLASS_MAX55 == 0, NA_real_, NRCLASS_MAX55_AGE),
+         NRCLASS_MAX55_YEAR = if_else(NRCLASS_MAX55 == 0, NA_integer_, NRCLASS_MAX55_YEAR),
+                  
+         #These include only values where I9_HYPTENS == 1 and NRMED_MAX55 > 0, rest are set as NA 
+         NRCL_HT55 = if_else(I9_HYPTENS == 1 & NRCLASS_MAX55 > 0, NRCLASS_MAX55, NA_integer_),
+         NRCL_HT55_AGE = if_else(I9_HYPTENS == 1, NRCLASS_MAX55_AGE, NA_real_),
+         NRCL_HT55_YEAR = if_else(I9_HYPTENS == 1, NRCLASS_MAX55_YEAR, NA_integer_),
+         NRCL5_HT55  = if_else(NRCL_HT55  >= 5, "5+", as.character(NRCL_HT55)),
+         NRCL4_HT55  = if_else(NRCL_HT55  >= 4, "4+", as.character(NRCL_HT55)),
+         NRCL5_HT55_AGE  = NRCL_HT55_AGE,
+         NRCL4_HT55_AGE  = NRCL_HT55_AGE,
+
+         #Two class variable from variables above 
+         RES2_HT55 = case_when(
+           NRCLASS_MAX55 == 1 & I9_HYPTENS == 1 ~ "Mild",
+           NRCLASS_MAX55 >= 4 & I9_HYPTENS == 1 ~ "Resistant",
+           TRUE ~ NA_character_
+         ) %>% factor(levels=c("Mild","Resistant")),
+      
+         #Wider definition of hypercholesterolaemia, includes also statin medication
+         HYPCHOL_WIDE = if_else(E4_HYPERCHOL == 1 | RX_STATIN ==1, 1, 0)) %>% 
+  
+  rowwise() %>%
+  mutate(HYPCHOL_WIDE_AGE = min(E4_HYPERCHOL_AGE,RX_STATIN_AGE)) %>%
+  ungroup() %>%
+  relocate(c(contains("I9_"),contains("RX_")), .after = last_col()) %>%
+  rename_at(vars(contains('I9_')), list(~str_remove(., "I9_"))) %>%
+  rename_at(vars(contains('RX_')), list(~str_remove(., "RX_"))) %>%
+  rename_at(vars(contains('E4_')), list(~str_remove(., "E4_"))) %>%
+  rename_at(vars(contains('N14_')), list(~str_remove(., "N14_"))) %>%
+  rename_at(vars(contains('F5_')), list(~str_remove(., "F5_")))  %>%
+  
+  #NA's in disease covariates set as 0. These NA's represent similar variables,
+  #are present for GWASes and are not relevant for us.  
+  mutate_at(c( "DIABETES", "OBESITY", "HYPCHOL_WIDE"), as.integer) %>%
+  mutate_at(c( "DIABETES", "OBESITY", "HYPCHOL_WIDE"), ~if_else(is.na(.), 0L, .))
+
+```
+
+<br>
+
+**Plot count the new count variables**
+
+```{r, fig.width=7, fig.height=3}
+
+
+
+p1 <- ggplot(df.55, aes(x=factor(NRCLASS_MAX55)))+
+  geom_bar(stat="count",  fill="steelblue") +
+  theme_minimal() +
+  scale_x_discrete(na.translate = FALSE) 
+  
+
+p2 <- ggplot(df.55, aes(x=factor(NRCL_HT55)))+
+  geom_bar(stat="count",  fill="steelblue") +
+  theme_minimal() +
+  scale_x_discrete(na.translate = FALSE) 
+  
+ggarrange(p1,p2)
+
+table(df.55$NRCL_HT55)
+
+```
+
+<br>
+
+**Outcomes before AGE 55 and covariates after AGE 55 removed**
+
+
+```{r}
+
+#Drug purchase registry starts at 1994 - let's remove outcome event's before that.
+
+df.55 <- df.55 %>%
+  filter(!is.na(FU_END_AGE) & FU_END_AGE >= 0) %>% #Now removed (at earlier step just set as NA) 
+  
+  mutate(across(all_of(unlist(names_ep)), #Outcome events before YEAR 1994 set as NA   
+                ~if_else(!is.na(get(str_glue("{cur_column()}_YEAR"))) &  get(str_glue("{cur_column()}_YEAR")) < 1994, 
+                         NA_integer_, .) ),
+    
+         across(all_of(unlist(names_ep)), #Outcome events before AGE 55 set as NA -> new variable {outcome}_POST
+                list(POST=~if_else(get(str_glue("{cur_column()}_AGE")) < 55, 
+                                   NA_integer_, .) )), 
+
+         
+         across(all_of(covs_nfem), #Covariates _after_ AGE 55 set as NA -> new variable {cov}_PRE
+                list(PRE=~if_else( get(str_glue("{cur_column()}_AGE")) >= 55, 0L, as.integer(.)) ))
+
+  )%>% 
+  mutate_at("NRCL_HT55", as.factor)
+
+
+#         across(all_of(unlist(names_ep)), #If {outcome}_POST is NA, also corresponding AGE variable is set as NA
+ #               list(POST_AGE =~if_else(    is.na(get(str_glue("{cur_column()}_POST"))), 
+  #                                     NA_real_, get(str_glue("{cur_column()}_AGE")) ))),
+
+
+#Each outcome is filtered separately - for cox-model 
+# df.55.list <- lapply(names_ep, function(ep){
+
+#      df.55 %>% filter(get(str_glue("{ep}_AGE")) >=55)
+
+#  }) %>% setNames(names_ep)
+
+
+#Filter if no hypertension, no medication or age above 55
+df.55.all <- df.55
+df.55 <- df.55 %>% filter(!is.na(NRCL_HT55)) 
+  
+
+
+```
+
+
+<details><summary>Summaries for outcomes</summary>
+
+```{r}
+
+lapply(names_ep, function(ep){
+    df.55 %>% 
+       select(str_glue("{ep}_AGE"), ep, str_glue("{ep}_POST"))  %>% 
+       mutate_at(c(ep, str_glue("{ep}_POST")), as.factor) %>%
+       summary()
+  }) %>% setNames(names_ep)
+
+
+```
+
+</details><br>
+
+
+## Characteristics{.tabset}
+<br>
+
+<details><summary>**Number of drug classes**</summary>
+
+```{r}
+
+htres_pre55_long %>%
+  #slice(1:10000) %>%
+  select(FINNGENID, sum_nr_class, sum_classes) %>%
+  #Highest number of classes selected
+  group_by(FINNGENID) %>%
+    slice(which.max(sum_nr_class)) %>%
+  ungroup()  %>%
+  #sum_classes converted to vector and arranged alphabetically
+  mutate(sum_classes = str_split(sum_classes,"\\|"),
+         sum_classes = lapply(sum_classes, sort)) %>%
+  #Grouped by sum_clases and number of each combination selected
+  group_by(sum_classes) %>%
+    summarise(n=n()) %>%
+  ungroup %>% 
+  #Pecentage calculated
+  mutate(perc=round(n/sum(n)*100,2)) %>%
+  #Format changes and ordering
+  rowwise %>%
+    mutate(sum_classes =  glue::glue_collapse(sum_classes, sep=", ")) %>%
+  ungroup() %>%
+  arrange(desc(n)) %>%
+  rename(class_combinations = sum_classes) %>%
+  filter(n>=5) %>%
+  my.kable() %>%  
+  kable_styling(font_size = 12, full_width=F, position="left") 
+  
+#One line removed, because n<5.
+
+```
+
+</details>
+<br>
+
+
+**Number of individuals**
+Here hypertensive individuals have hypertension diagnosis, at least one medication and no history of outcome before age 55.
+```{r}
+font_size <- 12
+
+#Hypertension
+df.55.all %>% 
+  mutate(HT_TMP = if_else(is.na(NRCL_HT55) | as.numeric(NRCL_HT55) == 0, 0L, 1L)) %>% 
+  summarise(n=n(), ht_n = sum(HT_TMP, na.rm=T), ht_p = round(mean(HT_TMP, na.rm=T)*100,2))%>%
+  my.kable() %>%   
+  kable_styling(font_size = font_size, full_width=F, position="left") 
+
+```
+<br>
+
+
+### Number of medicine classes
+
+```{r }
+
+#Number of medicine classes
+df.55 %>%
+  create_n_table("NRCL5_HT55", covs_pre, names_ep_post) %>% 
+  mutate_all(~str_replace(.,"^[0-4]\\s.*$", "-")) %>%
+  my.kable() %>%   kable_styling(font_size = font_size) 
+
+```
+
+### Resistant hypertension
+
+```{r }
+
+#Number of resistant and refractive hypertension
+df.55 %>%
+  create_n_table("RES2_HT55", covs_pre, names_ep_post) %>%
+  my.kable() %>%   kable_styling(font_size = font_size) 
+
+```
+
+
+## {-}
+
+# Analysis
+
+## KM plots {.tabset}
+
+<br>
+
+**Model by survfit**
+
+```{r}
+font_size <- 11
+
+kms.c <- 
+  lapply(names_ep, function(ep){
+    survfit(Surv(get(str_glue("{ep}_AGE")), get(str_glue("{ep}_POST"))) ~ NRCL5_HT55, data=df.55)
+  }) %>% setNames(names_ep)
+
+
+kms.r <- 
+  lapply(names_ep, function(ep){
+    survfit(Surv(get(str_glue("{ep}_AGE")), get(str_glue("{ep}_POST"))) ~ RES2_HT55, data=df.55)
+  }) %>% setNames(names_ep)
+
+
+```
+
+### Number of medicine classes
+
+```{r, fig.width=10, fig.height=7}
+
+
+legs_nr_cl <- c("1","2","3","4","5+")
+names_ep_tmp <- list("CVD_HARD", "STR_EXH", "CHD", "INTRACRA", "HEARTFAIL", "RENFAIL", "DEATH", "K_CARDIAC")
+ep<- names_ep_tmp[[1]]
+
+plot_list.c <- lapply(names_ep_tmp, function(ep){
+    survplot <- ggsurvplot(kms.c[[ep]], fun="event", conf.int = F, censor = F, 
+                           pval=T, pval.coord = c(51,0.47), pval.size=3,                         
+                           xlim=c(50,76), ylim=c(0, 0.5), break.x.by=10, 
+                           xlab="Age", ylab="Cumulative incidence", 
+                           title = nice_names[ep],  size = 0.5, ggtheme = theme_classic(), 
+                           legend.labs=legs_nr_cl, legend="none", 
+                           risk.table=T, fontsize=3, risk.table.height=0.32)
+    survplot$table <- survplot$table + 
+              theme(plot.title = element_text(size=11, face="bold"))
+    survplot
+  })  %>% setNames(names_ep_tmp) 
+
+
+plot_list.c$K_CARDIAC$plot <-  plot_list.c$K_CARDIAC$plot +
+      theme(legend.position = c(0.8,0.7)) +
+      guides(col = guide_legend(reverse = TRUE, title = 'Medication\nclasses'))
+
+
+plots.c <- arrange_ggsurvplots(plot_list.c, nrow = 2, ncol = 4)
+ggsave(file = str_glue("{fig_path}/km.c.png"), plot = plots.c, height = 9, width = 12, dpi = 200)
+ggsave(file = str_glue("{fig_path}/km.c.eps"), plot = plots.c, height = 9, width = 12, dpi = 200, device = cairo_ps,)
+
+
+```
+
+
+### Resistant hypertension
+
+Variable RES3_HT is based on number of medicine classes.
+
+```{r, fig.width=10, fig.height=7}
+
+legs_res_ht <- levels(df.55$RES2_HT55)
+  
+plot_list.r <- lapply(names_ep_tmp, function(ep){
+    survplot <- ggsurvplot(kms.r[[ep]], fun="event", conf.int = F, censor = F, 
+                           pval=T, pval.coord = c(51,0.47), pval.size=3,                         
+                           xlim=c(50,76), ylim=c(0, 0.5), break.x.by=10, 
+                           xlab="Age", ylab="Cumulative incidence", 
+                           title = nice_names[ep],  size = 0.5, ggtheme = theme_classic(), 
+                           legend.labs=legs_res_ht, legend="none", 
+                           risk.table=T, fontsize=3, risk.table.height=0.27)
+    survplot$table <- survplot$table + 
+              theme(plot.title = element_text(size=11, face="bold"))
+    survplot
+  })  %>% setNames(names_ep_tmp) 
+
+
+plot_list.r$K_CARDIAC$plot <-  plot_list.r$K_CARDIAC$plot +
+      theme(legend.position = c(0.75,0.7)) +
+      guides(col = guide_legend(reverse = TRUE, title = 'Hypertension\ntype'))
+
+
+plots.r <- arrange_ggsurvplots(plot_list.r, nrow = 2, ncol = 4)
+ggsave(file = str_glue("{fig_path}/km.r.png"), plot = plots.r, height = 8, width = 12, dpi = 200)
+ggsave(file = str_glue("{fig_path}/km.r.eps"), plot = plots.r, height = 8, width = 12, dpi = 200, device = cairo_ps,)
+
+```
+
+## {-}
+
+
+
+## Cox plots {.tabset}
+
+<br>
+
+**Cox models calculated**
+
+
+```{r}
+
+covs_f_pre<- paste(covs_pre, collapse = " + ")
+
+cxs.c <- 
+  lapply(names_ep, function(ep){
+    my_formula <- str_glue("Surv({ep}_AGE, {ep}_POST) ~ NRCL5_HT55 + {covs_f_pre}")
+    coxph(as.formula(my_formula), data= df.55)
+  }) %>% setNames(names_ep)
+
+#cxs.c
+
+df.55 <- df.55 %>% mutate_at("NRCL_HT55", as.integer)
+cxs.cn <- 
+  lapply(names_ep, function(ep){
+    my_formula <- str_glue("Surv({ep}_AGE, {ep}_POST) ~ NRCL_HT55 + {covs_f_pre}")
+    coxph(as.formula(my_formula), data= df.55)
+  }) %>% setNames(names_ep)
+
+
+cxs.r <- 
+  lapply(names_ep, function(ep){
+    my_formula <- str_glue("Surv({ep}_AGE, {ep}_POST) ~ RES2_HT55 + {covs_f_pre}")
+    coxph(as.formula(my_formula), data= df.55)
+  }) %>% setNames(names_ep)
+
+#cxs.r
+
+
+
+```
+
+<br>
+
+
+<details><summary>**Assumptions**</summary>
+
+Assumptions are tested for 'number of medicine classes' as exposure.
+
+**cloglog plot**
+
+```{r, fig.width=10, fig.height=7}
+
+
+plot_list.clog <- lapply(names_ep_tmp, function(ep){
+    ggsurvplot(kms.c[[ep]], fun="cloglog", conf.int = F, censor = F, 
+                           pval.coord = c(51,0.47), pval.size=3,                         
+                           xlim=c(55,76), ylim=c(-5,0.5),xlab="Age",
+                           title = nice_names[ep],  size = 0.5, ggtheme = theme_classic(), 
+                           legend.labs=legs_nr_cl, legend="none")
+  })  %>% setNames(names_ep_tmp) 
+
+
+plot_list.clog$K_CARDIAC$plot <-  plot_list.clog$K_CARDIAC$plot +
+      theme(legend.position = c(0.25, 0.7)) +
+      guides(col = guide_legend(reverse = TRUE, title = 'Medication\nclasses'))
+
+plots.clog <- arrange_ggsurvplots(plot_list.clog, nrow = 2, ncol = 4)
+ggsave(file = str_glue("{fig_path}/clog.55.png"), plot = plots.clog, height = 8, width = 12, dpi = 200)
+ggsave(file = str_glue("{fig_path}/clog.55.eps"), plot = plots.clog, height = 8, width = 12, dpi = 200, device = cairo_ps)
+
+```
+
+
+
+</details><br>
+
+
+
+**Tables**
+
+```{r}
+ 
+
+removed_cols <- c("CHD.Variable", "STR_EXH.Variable", "INTRACRA.Variable", "HEARTFAIL.Variable", "RENFAIL.Variable", "DEATH.Variable", "K_CARDIAC.Variable")
+#names_ep_post <- lapply(names_ep, function(ep){str_glue("{ep}_POST")})
+  
+#Number of drug classes
+lapply(names_ep, function(ep){
+  extr_table(cxs.c[[ep]], "NRCL") %>%
+  select(-pval)
+})%>% setNames(names_ep) %>%
+  do.call(cbind,.)  %>%
+  select(-one_of(removed_cols)) %>%
+  mutate_all(as.character) %>% 
+  my.kable() %>%   kable_styling(font_size = font_size)
+
+#Number of drug classes/numeric
+lapply(names_ep, function(ep){
+  extr_table(cxs.cn[[ep]], "NRCL") %>%
+  select(-pval)
+})%>% setNames(names_ep) %>%
+  do.call(cbind,.)  %>%
+  select(-one_of(removed_cols)) %>%
+  mutate_all(as.character) %>% 
+  my.kable() %>%   kable_styling(font_size = font_size)
+
+#Resistant hypertension
+lapply(names_ep, function(ep){
+  extr_table(cxs.r[[ep]], "RES2_HT") %>%
+  select(-pval)
+})%>% setNames(names_ep) %>%
+  do.call(cbind,.)  %>%
+  select(-one_of(removed_cols)) %>%
+  mutate_all(as.character) %>% 
+  my.kable() %>%   kable_styling(font_size = font_size)
+  
+```
+
+<br>
+
+### Number of medicine classes
+
+
+```{r, fig.width=10, fig.height=7}
+
+names_ep_tmp <- list("CVD_HARD", "CHD","HEARTFAIL", "DEATH", "STR_EXH", "INTRACRA",  "RENFAIL",  "K_CARDIAC")
+
+legs_nr_cl <- c("1","2","3","4","5+")
+#names_ep_3 <- list("CVD_HARD","CHD", "RENFAIL")
+
+#Covariate combinations
+exp.covs <- expand.grid(
+      female = 0.5,
+      DIABETES_PRE = mean( df.55$DIABETES_PRE, na.rm=T),
+      OBESITY_PRE = mean(df.55$OBESITY_PRE, na.rm=T),
+      HYPCHOL_WIDE_PRE = mean( df.55$OBESITY_PRE, na.rm=T)
+    ) 
+
+fit.cxs.c <- 
+  lapply(names_ep_tmp, function(ep){
+
+    exp.var <- expand.grid(NRCL5_HT55 = legs_nr_cl)
+    exp.cxs <- bind_cols(exp.var, exp.covs)
+    survfit(cxs.c[[ep]], newdata = exp.cxs)
+        
+  }) %>% setNames(names_ep_tmp)
+
+
+plot_list.c <- lapply(names_ep_tmp, function(ep){
+
+  ggsurvplot(fit.cxs.c[[ep]], fun="event", data= df.55, conf.int = F, censor = F, xlim=c(50,80), ylim=c(0,0.6),
+             title = nice_names[[ep]],  size = 0.5, ggtheme = theme_classic(), legend.labs=legs_nr_cl,
+             legend="none", break.x.by=10, xlab=" ", ylab=" ")$plot
+})  %>% setNames(names_ep_tmp)
+
+#Individual images are adjusted separately
+
+plot_list.c$CVD_HARD <-  plot_list.c$CVD_HARD +
+      ylab("Cumulative incidence") +
+      theme(legend.position = c(0.23,0.62)) +
+      guides(col = guide_legend(reverse = TRUE, title = 'Medication\nClasses'))
+
+plot_list.c$STR_EXH <-  plot_list.c$STR_EXH +
+  xlab("Age") + ylab("Cumulative incidence")
+
+plot_list.c$INTRACRA <-  plot_list.c$INTRACRA +
+  xlab("Age")
+
+plot_list.c$RENFAIL <-  plot_list.c$RENFAIL +
+  xlab("Age")
+
+
+plots.c <- grid.arrange(grobs = plot_list.c, nrow=2, ncol = 4)
+ggsave(file = str_glue("{fig_path}/cx.medcl.55.png"), plot = plots.c, height = 6, width = 12, dpi = 300)
+ggsave(file = str_glue("{fig_path}/cx.medcl.55.eps"), plot = plots.c, device = cairo_ps, height = 6, width = 12, dpi = 300)
+
+```
+
+
+### Resistant hypertension
+
+```{r, fig.width=10, fig.height=7}
+
+
+fit.cxs.r <- 
+  lapply(names_ep_tmp, function(ep){
+
+    exp.var <- expand.grid(RES2_HT55 = levels(as.factor( df.55$RES2_HT55)))
+    exp.cxs <- bind_cols(exp.var, exp.covs)
+    survfit(cxs.r[[ep]], newdata = exp.cxs)
+        
+  }) %>% setNames(names_ep_tmp)
+
+plot_list.r <- lapply(names_ep_tmp, function(ep){
+
+  ggsurvplot(fit.cxs.r[[ep]], fun="event", data= df.55, conf.int = F, censor = F, xlim=c(50,80), ylim=c(0,0.6),
+             title = nice_names[[ep]],  size = 0.5, ggtheme = theme_classic(), legend.labs=levels( df.55$RES2_HT55),
+             legend="none", break.x.by=10, xlab=" ", ylab=" ")$plot
+})  %>% setNames(names_ep_tmp)
+
+#Individual images are adjusted separately
+
+plot_list.r$CVD_HARD <-  plot_list.r$CVD_HARD +
+      ylab("Cumulative incidence") +
+      theme(legend.position = c(0.23,0.62)) +
+      guides(col = guide_legend(reverse = TRUE, title = 'Hypertension\ntype'))
+
+plot_list.r$STR_EXH <-  plot_list.r$STR_EXH +
+  xlab("Age") + ylab("Cumulative incidence")
+
+plot_list.r$INTRACRA <-  plot_list.r$INTRACRA +
+  xlab("Age")
+
+plot_list.r$RENFAIL <-  plot_list.r$RENFAIL +
+  xlab("Age")
+
+plots.r <- grid.arrange(grobs = plot_list.r, nrow=2, ncol = 4)
+ggsave(file = str_glue("{fig_path}/cx.resht.55.png"), plot = plots.r, height = 6, width = 12, dpi = 300)
+ggsave(file = str_glue("{fig_path}/cx.resht.55.eps"), plot = plots.r, device = cairo_ps, height = 6, width = 12, dpi = 300)
+
+```
+
+
+
+## {-}
+
